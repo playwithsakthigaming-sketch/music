@@ -6,7 +6,7 @@ import asyncio
 import os
 import logging
 
-# Optional: reduce discord logs
+# Reduce discord logs
 logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -14,7 +14,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# yt-dlp options (FIX YouTube bot detection)
+# yt-dlp options (bypass YouTube bot detection)
 ytdl_opts = {
     "format": "bestaudio/best",
     "quiet": True,
@@ -29,11 +29,12 @@ ytdl_opts = {
         }
     },
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10)"
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
     }
 }
 
 ffmpeg_opts = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn"
 }
 
@@ -50,13 +51,19 @@ def get_queue(guild_id):
 
 async def get_audio(query):
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+
+    data = await loop.run_in_executor(
+        None, lambda: ytdl.extract_info(query, download=False)
+    )
 
     if not data:
         raise Exception("No data returned")
 
     if "entries" in data:
         data = data["entries"][0]
+
+    if not data or "url" not in data:
+        raise Exception("No playable URL found")
 
     return data["url"], data["title"]
 
@@ -77,11 +84,10 @@ async def play_next(interaction: discord.Interaction):
 
     def after_play(error):
         if error:
-            print(f"Player error: {error}")
+            print("Player error:", error)
         asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
 
     vc.play(source, after=after_play)
-
     await interaction.channel.send(f"🎶 Now Playing: **{title}**")
 
 
@@ -112,6 +118,7 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.user.voice.channel.connect()
 
         url, title = await get_audio(query)
+
         queue = get_queue(interaction.guild.id)
         queue.append((url, title))
 
@@ -121,9 +128,9 @@ async def play(interaction: discord.Interaction, query: str):
             await play_next(interaction)
 
     except Exception as e:
-        print(e)
+        print("PLAY ERROR:", e)
         await interaction.followup.send(
-            "❌ Failed to play this song. Try another search or link."
+            "❌ YouTube blocked this song or it is unavailable. Try another song."
         )
 
 
