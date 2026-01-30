@@ -4,17 +4,33 @@ from discord import app_commands
 import yt_dlp
 import asyncio
 import os
+import logging
+
+# Optional: reduce discord logs
+logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# yt-dlp options (FIX YouTube bot detection)
 ytdl_opts = {
     "format": "bestaudio/best",
     "quiet": True,
     "default_search": "ytsearch",
-    "noplaylist": True
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "ignoreerrors": True,
+    "source_address": "0.0.0.0",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android"]
+        }
+    },
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10)"
+    }
 }
 
 ffmpeg_opts = {
@@ -36,6 +52,9 @@ async def get_audio(query):
     loop = asyncio.get_event_loop()
     data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
 
+    if not data:
+        raise Exception("No data returned")
+
     if "entries" in data:
         data = data["entries"][0]
 
@@ -51,19 +70,29 @@ async def play_next(interaction: discord.Interaction):
     url, title = queue.pop(0)
     vc = interaction.guild.voice_client
 
+    if not vc:
+        return
+
     source = discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
     def after_play(error):
+        if error:
+            print(f"Player error: {error}")
         asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
 
     vc.play(source, after=after_play)
+
     await interaction.channel.send(f"🎶 Now Playing: **{title}**")
 
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    await bot.tree.sync()
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔁 Synced {len(synced)} commands")
+    except Exception as e:
+        print(e)
 
 
 @bot.tree.command(name="play", description="Play music from YouTube")
@@ -71,23 +100,31 @@ async def on_ready():
 async def play(interaction: discord.Interaction, query: str):
 
     if not interaction.user.voice:
-        await interaction.response.send_message("❌ Join a voice channel first", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Join a voice channel first", ephemeral=True
+        )
         return
-
-    if not interaction.guild.voice_client:
-        await interaction.user.voice.channel.connect()
 
     await interaction.response.defer()
 
-    queue = get_queue(interaction.guild.id)
+    try:
+        if not interaction.guild.voice_client:
+            await interaction.user.voice.channel.connect()
 
-    url, title = await get_audio(query)
-    queue.append((url, title))
+        url, title = await get_audio(query)
+        queue = get_queue(interaction.guild.id)
+        queue.append((url, title))
 
-    await interaction.followup.send(f"✅ Added: **{title}**")
+        await interaction.followup.send(f"✅ Added: **{title}**")
 
-    if not interaction.guild.voice_client.is_playing():
-        await play_next(interaction)
+        if not interaction.guild.voice_client.is_playing():
+            await play_next(interaction)
+
+    except Exception as e:
+        print(e)
+        await interaction.followup.send(
+            "❌ Failed to play this song. Try another search or link."
+        )
 
 
 @bot.tree.command(name="skip", description="Skip current song")
